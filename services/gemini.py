@@ -5,14 +5,16 @@ Google Gemini API 래퍼.
 - check_answer: 주관식 답변 채점
 """
 import logging
+import asyncio
 import google.generativeai as genai
 from google.generativeai.types import GenerationConfig
 from core.config import get_settings
 from models.schemas import Difficulty
 from typing import AsyncIterator
-import asyncio
 
 logger = logging.getLogger(__name__)
+
+TIMEOUT_SECONDS = 15  # 15초 초과 시 에러 반환
 
 DIFFICULTY_PROMPTS: dict[str, str] = {
     Difficulty.easy: (
@@ -61,12 +63,16 @@ class GeminiService:
         emotion_en: str,
         difficulty: Difficulty,
     ) -> str:
-        """감정 설명을 한 번에 반환."""
+        """감정 설명을 한 번에 반환. 15초 타임아웃 적용."""
         prompt = _build_prompt(emotion_name, emotion_en, difficulty)
-        response = await asyncio.to_thread(
-            self._model.generate_content, prompt
-        )
-        return response.text.strip()
+        try:
+            response = await asyncio.wait_for(
+                asyncio.to_thread(self._model.generate_content, prompt),
+                timeout=TIMEOUT_SECONDS,
+            )
+            return response.text.strip()
+        except asyncio.TimeoutError:
+            raise TimeoutError(f"Gemini API 응답 초과 ({TIMEOUT_SECONDS}초)")
 
     async def stream_description(
         self,
@@ -74,14 +80,18 @@ class GeminiService:
         emotion_en: str,
         difficulty: Difficulty,
     ) -> AsyncIterator[str]:
-        """설명을 청크 단위로 스트리밍 (SSE 엔드포인트용)."""
+        """설명을 청크 단위로 스트리밍."""
         prompt = _build_prompt(emotion_name, emotion_en, difficulty)
-        response = await asyncio.to_thread(
-            self._model.generate_content, prompt, stream=True  # type: ignore
-        )
-        for chunk in response:
-            if chunk.text:
-                yield chunk.text
+        try:
+            response = await asyncio.wait_for(
+                asyncio.to_thread(self._model.generate_content, prompt, stream=True),  # type: ignore
+                timeout=TIMEOUT_SECONDS,
+            )
+            for chunk in response:
+                if chunk.text:
+                    yield chunk.text
+        except asyncio.TimeoutError:
+            raise TimeoutError(f"Gemini API 응답 초과 ({TIMEOUT_SECONDS}초)")
 
     async def check_answer(self, user_answer: str, correct_answer: str) -> bool:
         """주관식 답변이 정답과 의미상 같은지 판별."""
@@ -90,11 +100,14 @@ class GeminiService:
             f"정답: \"{correct_answer}\"\n\n"
             "의미상 같거나 매우 유사한 한국어 감정 표현이면 YES, 아니면 NO만 출력."
         )
-        response = await asyncio.to_thread(
-            self._model.generate_content, prompt
-        )
-        result = response.text.strip().upper()
-        return result.startswith("YES")
+        try:
+            response = await asyncio.wait_for(
+                asyncio.to_thread(self._model.generate_content, prompt),
+                timeout=10,
+            )
+            return response.text.strip().upper().startswith("YES")
+        except asyncio.TimeoutError:
+            return False  # 타임아웃 시 오답 처리
 
 
 # 싱글톤
