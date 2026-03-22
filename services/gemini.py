@@ -31,6 +31,12 @@ DIFFICULTY_PROMPTS: dict[str, str] = {
 
 def _build_prompt(emotion_name: str, emotion_en: str, difficulty: Difficulty) -> str:
     diff_instruction = DIFFICULTY_PROMPTS[difficulty]
+    # 규칙을 System Instruction으로 넘겼으므로, 여기서는 핵심 정보만 전달합니다.
+    return (
+        f"감정: \"{emotion_name}\" (영어: {emotion_en})\n\n"
+        f"조건: {diff_instruction}"
+    )
+    diff_instruction = DIFFICULTY_PROMPTS[difficulty]
     return (
         f"감정: \"{emotion_name}\" (영어: {emotion_en})\n\n"
         f"{diff_instruction}\n\n"
@@ -47,12 +53,21 @@ class GeminiService:
     def __init__(self):
         settings = get_settings()
         genai.configure(api_key=settings.gemini_api_key)
+        
+        # 시스템 지시어 추가
+        sys_instruct = (
+            "너는 감정을 1~2문장으로 짧고 명확하게 설명하는 사전이야. "
+            "감정 이름(한국어/영어)은 절대 포함하지 말고 설명 텍스트만 출력해. "
+            "반드시 마침표(.)로 끝나는 완전한 문장으로 작성해."
+        )
+        
         self._model = genai.GenerativeModel(
             model_name=settings.gemini_model,
+            system_instruction=sys_instruct,
             generation_config=GenerationConfig(
                 max_output_tokens=settings.gemini_max_tokens,
-                temperature=0.7,
-                stop_sequences=["...", "…"],  # 말줄임표로 끝나는 경우 차단
+                temperature=0.4,  # 0.7에서 0.4로 하향
+                # stop_sequences=["...", "…"],  # 말줄임표 차단 로직 제거
             ),
         )
 
