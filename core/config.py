@@ -10,7 +10,7 @@ class Settings(BaseSettings):
 
     # Gemini 모델
     gemini_model: str = "gemini-2.5-flash"
-    gemini_max_tokens: int = 1000
+    gemini_max_tokens: int = 400
 
     # 캐시 TTL (초)
     cache_ttl: int = 86400  # 24시간
