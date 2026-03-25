@@ -1,4 +1,5 @@
 import random
+import logging
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from models.schemas import (
@@ -12,14 +13,11 @@ from core.config import get_settings
 from routers.emotions import get_random_emotions
 
 router = APIRouter(prefix="/quiz", tags=["quiz"])
+logger = logging.getLogger(__name__)
 
 
 @router.post("/generate", response_model=GenerateResponse)
 async def generate_description(req: GenerateRequest):
-    """
-    감정 설명 생성.
-    캐시 히트 시 Claude 호출 없이 즉시 반환.
-    """
     settings = get_settings()
 
     # 1. 캐시 확인
@@ -27,15 +25,19 @@ async def generate_description(req: GenerateRequest):
         req.emotion_name, req.difficulty, req.seed
     )
     if cached:
+        logger.info(f"[CACHE HIT] {req.emotion_name} / {req.difficulty}")
         return GenerateResponse(description=cached, cached=True)
 
-    # 2. gemini 호출
+    # 2. Gemini 호출
     try:
         description = await gemini_service.generate_description(
             req.emotion_name, req.emotion_en, req.difficulty
         )
+        # 실제 응답 로그 — 잘리는지 확인용
+        logger.info(f"[GEMINI] {req.emotion_name} → '{description}'")
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"gemini API 오류: {e}")
+        logger.error(f"[GEMINI ERROR] {req.emotion_name}: {e}")
+        raise HTTPException(status_code=502, detail=f"Gemini API 오류: {e}")
 
     # 3. 캐시 저장
     await cache_service.set_description(
@@ -48,13 +50,8 @@ async def generate_description(req: GenerateRequest):
 
 @router.post("/generate/stream")
 async def stream_description(req: GenerateRequest):
-    """
-    감정 설명을 SSE(Server-Sent Events)로 스트리밍.
-    캐시 히트 시에도 일반 텍스트로 즉시 반환.
-    """
     settings = get_settings()
 
-    # 캐시 히트면 스트림 없이 바로 반환
     cached = await cache_service.get_description(
         req.emotion_name, req.difficulty, req.seed
     )
@@ -64,7 +61,6 @@ async def stream_description(req: GenerateRequest):
             yield "data: [DONE]\n\n"
         return StreamingResponse(cached_stream(), media_type="text/event-stream")
 
-    # 스트리밍 생성
     full_text = []
 
     async def event_stream():
@@ -75,8 +71,8 @@ async def stream_description(req: GenerateRequest):
             yield f"data: {chunk}\n\n"
         yield "data: [DONE]\n\n"
 
-        # 완성된 텍스트 캐시 저장 (백그라운드에서 처리하려면 BackgroundTasks 사용 가능)
         complete = "".join(full_text)
+        logger.info(f"[GEMINI STREAM] {req.emotion_name} → '{complete}'")
         await cache_service.set_description(
             req.emotion_name, req.difficulty, complete,
             ttl=settings.cache_ttl, seed=req.seed,
@@ -87,15 +83,10 @@ async def stream_description(req: GenerateRequest):
 
 @router.post("/options", response_model=OptionsResponse)
 async def get_options(req: OptionsRequest):
-    """
-    MCQ 보기 생성.
-    정답 1개 + 랜덤 오답 (count-1)개를 섞어서 반환.
-    """
     wrong = get_random_emotions(
         exclude_name=req.correct_name,
         count=req.count - 1,
     )
-    # 정답 포함 후 셔플
     from routers.emotions import _ALL_EMOTIONS
     correct_data = next(
         (e for e in _ALL_EMOTIONS if e["name"] == req.correct_name), None
@@ -113,16 +104,11 @@ async def get_options(req: OptionsRequest):
 
 @router.post("/check", response_model=CheckResponse)
 async def check_answer(req: CheckRequest):
-    """
-    주관식 답변 채점.
-    gemini가 의미적 유사도를 판단.
-    """
     try:
         is_correct = await gemini_service.check_answer(
             req.user_answer, req.correct_answer
         )
     except Exception as e:
-        # Claude 호출 실패 시 단순 문자열 비교로 폴백
         is_correct = req.user_answer.strip() == req.correct_answer.strip()
 
     return CheckResponse(
